@@ -1,0 +1,551 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1.0" />
+<title>Police Case Intelligence Platform</title>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react/18.2.0/umd/react.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/react-dom/18.2.0/umd/react-dom.production.min.js"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/babel-standalone/7.23.5/babel.min.js"></script>
+<script src="https://cdn.tailwindcss.com"></script>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/Chart.js/4.4.1/chart.umd.min.js"></script>
+<style>
+  body { font-family: -apple-system, Segoe UI, Roboto, Arial, sans-serif; }
+  .badge { display:inline-block; padding:2px 8px; border-radius:9999px; font-size:12px; font-weight:600; }
+</style>
+</head>
+<body class="bg-slate-100 text-slate-800">
+<div id="root"></div>
+
+<script type="text/babel" data-presets="react">
+const { useState, useEffect, useCallback, useRef } = React;
+const API = "";
+
+function authHeaders(token) {
+  return token ? { "Authorization": "Bearer " + token, "Content-Type": "application/json" } : { "Content-Type": "application/json" };
+}
+
+async function api(path, token, options = {}) {
+  const res = await fetch(API + path, { ...options, headers: { ...authHeaders(token), ...(options.headers || {}) } });
+  if (!res.ok) {
+    let msg = "Request failed";
+    try { msg = (await res.json()).detail || msg; } catch (e) {}
+    throw new Error(msg);
+  }
+  return res.status === 204 ? null : res.json();
+}
+
+const STATUS_COLOR = {
+  "Open": "bg-amber-100 text-amber-800", "Under Investigation": "bg-blue-100 text-blue-800",
+  "Solved": "bg-green-100 text-green-800", "Closed": "bg-slate-200 text-slate-700",
+};
+const PRIORITY_LABEL = { 1: "Low", 2: "Medium", 3: "High" };
+const PRIORITY_COLOR = { 1: "bg-slate-200 text-slate-700", 2: "bg-amber-100 text-amber-800", 3: "bg-red-100 text-red-800" };
+
+function Badge({ text, cls }) {
+  return <span className={"badge " + (cls || "bg-slate-200 text-slate-700")}>{text}</span>;
+}
+
+// ------------------------------------------------------------------ Login
+function Login({ onLogin }) {
+  const [username, setUsername] = useState("");
+  const [password, setPassword] = useState("");
+  const [err, setErr] = useState("");
+  const [busy, setBusy] = useState(false);
+
+  const submit = async (e) => {
+    e.preventDefault();
+    setBusy(true); setErr("");
+    try {
+      const data = await api("/api/login", null, { method: "POST", body: JSON.stringify({ username, password }) });
+      onLogin(data.token, data.user);
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <div className="min-h-screen flex items-center justify-center bg-slate-900">
+      <form onSubmit={submit} className="bg-white rounded-xl shadow-lg p-8 w-full max-w-sm">
+        <h1 className="text-xl font-bold text-slate-800 mb-1">Police Case Intelligence Platform</h1>
+        <p className="text-sm text-slate-500 mb-6">Explainable Multi-Agent AI &mdash; sign in</p>
+        {err && <div className="mb-4 text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">{err}</div>}
+        <label className="block text-sm font-medium mb-1">Username</label>
+        <input className="w-full border rounded px-3 py-2 mb-4" value={username} onChange={e => setUsername(e.target.value)} autoFocus />
+        <label className="block text-sm font-medium mb-1">Password</label>
+        <input type="password" className="w-full border rounded px-3 py-2 mb-6" value={password} onChange={e => setPassword(e.target.value)} />
+        <button disabled={busy} className="w-full bg-slate-900 text-white rounded py-2 font-semibold disabled:opacity-50">
+          {busy ? "Signing in..." : "Sign In"}
+        </button>
+        <p className="text-xs text-slate-400 mt-6">Demo accounts: commander / Commander@123, officer1 / Officer@123, clerk1 / Clerk@123</p>
+      </form>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ Layout
+function Layout({ user, page, setPage, onLogout, children }) {
+  const items = [
+    ["dashboard", "Dashboard"], ["cases", "Cases"], ["recommendations", "Recommendations"],
+  ];
+  if (user.role === "Police Commander" || user.role === "System Administrator") {
+    items.push(["optimise", "Resource Optimisation"], ["audit", "Audit Trail"]);
+  }
+  return (
+    <div className="min-h-screen flex">
+      <aside className="w-60 bg-slate-900 text-slate-200 flex flex-col">
+        <div className="p-4 border-b border-slate-700">
+          <div className="font-bold text-white leading-tight">Police Case<br/>Intelligence Platform</div>
+        </div>
+        <nav className="flex-1 p-2">
+          {items.map(([key, label]) => (
+            <button key={key} onClick={() => setPage(key)}
+              className={"w-full text-left px-3 py-2 rounded mb-1 " + (page === key ? "bg-slate-700 text-white" : "hover:bg-slate-800")}>
+              {label}
+            </button>
+          ))}
+        </nav>
+        <div className="p-4 border-t border-slate-700 text-sm">
+          <div className="font-semibold">{user.full_name}</div>
+          <div className="text-slate-400">{user.role}</div>
+          <button onClick={onLogout} className="mt-3 text-xs text-slate-300 underline">Sign out</button>
+        </div>
+      </aside>
+      <main className="flex-1 p-6 overflow-y-auto max-h-screen">{children}</main>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ Dashboard
+function BarChart({ id, labels, data, colors }) {
+  const ref = useRef(null);
+  useEffect(() => {
+    const chart = new Chart(ref.current, {
+      type: "bar",
+      data: { labels, datasets: [{ data, backgroundColor: colors }] },
+      options: { plugins: { legend: { display: false } }, scales: { y: { beginAtZero: true } } },
+    });
+    return () => chart.destroy();
+  }, [JSON.stringify(labels), JSON.stringify(data)]);
+  return <canvas id={id} ref={ref} height="180"></canvas>;
+}
+
+function Dashboard({ token }) {
+  const [stats, setStats] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => { api("/api/dashboard", token).then(setStats).catch(e => setErr(e.message)); }, []);
+  if (err) return <div className="text-red-700">{err}</div>;
+  if (!stats) return <div>Loading...</div>;
+
+  const statusLabels = stats.cases_by_status.map(r => r.status);
+  const statusData = stats.cases_by_status.map(r => r.n);
+  const offenceLabels = stats.cases_by_offence.map(r => r.offence_type);
+  const offenceData = stats.cases_by_offence.map(r => r.n);
+
+  return (
+    <div>
+      <h1 className="text-2xl font-bold mb-4">Dashboard</h1>
+      <div className="grid grid-cols-4 gap-4 mb-6">
+        <StatCard label="Total Cases" value={stats.total_cases} />
+        <StatCard label="Pending Recommendations" value={stats.pending_recommendations} />
+        <StatCard label="Stations Covered" value={stats.stations.length} />
+        <StatCard label="Highest Risk Station" value={stats.stations.slice().sort((a,b)=>b.risk_score-a.risk_score)[0]?.name || "-"} small />
+      </div>
+      <div className="grid grid-cols-2 gap-4 mb-6">
+        <div className="bg-white rounded-xl shadow p-4">
+          <h2 className="font-semibold mb-2">Cases by Status</h2>
+          <BarChart id="statusChart" labels={statusLabels} data={statusData} colors={["#f59e0b","#3b82f6","#22c55e","#94a3b8"]} />
+        </div>
+        <div className="bg-white rounded-xl shadow p-4">
+          <h2 className="font-semibold mb-2">Cases by Offence Type</h2>
+          <BarChart id="offenceChart" labels={offenceLabels} data={offenceData} colors={offenceLabels.map((_,i)=>`hsl(${i*40},60%,55%)`)} />
+        </div>
+      </div>
+      <div className="bg-white rounded-xl shadow p-4">
+        <h2 className="font-semibold mb-3">Station Risk Overview</h2>
+        <table className="w-full text-sm">
+          <thead><tr className="text-left text-slate-500 border-b">
+            <th className="py-1">Station</th><th>Patrol Officers</th><th>Investigators</th>
+            <th>Open Cases</th><th>Risk Score</th>
+          </tr></thead>
+          <tbody>
+            {stats.stations.map(s => (
+              <tr key={s.id} className="border-b last:border-0">
+                <td className="py-1">{s.name}</td><td>{s.patrol_officers}</td><td>{s.investigators}</td>
+                <td>{s.open_case_count}</td><td>{s.risk_score}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function StatCard({ label, value, small }) {
+  return (
+    <div className="bg-white rounded-xl shadow p-4">
+      <div className="text-xs uppercase tracking-wide text-slate-500">{label}</div>
+      <div className={small ? "text-lg font-bold mt-1" : "text-3xl font-bold mt-1"}>{value}</div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ Cases
+function NewCaseForm({ token, stations, onCreated, onCancel }) {
+  const [form, setForm] = useState({
+    title: "", offence_type: "Armed Robbery", priority: 2, station_id: stations[0]?.id || "",
+    location: "", reported_date: new Date().toISOString().slice(0,10), narrative: "",
+  });
+  const [busy, setBusy] = useState(false);
+  const [err, setErr] = useState("");
+  const set = (k) => (e) => setForm({ ...form, [k]: e.target.value });
+
+  const submit = async (e) => {
+    e.preventDefault(); setBusy(true); setErr("");
+    try {
+      const body = { ...form, priority: Number(form.priority), station_id: Number(form.station_id) };
+      const res = await api("/api/cases", token, { method: "POST", body: JSON.stringify(body) });
+      onCreated(res.case_id);
+    } catch (e) { setErr(e.message); }
+    setBusy(false);
+  };
+
+  return (
+    <form onSubmit={submit} className="bg-white rounded-xl shadow p-5 mb-6">
+      <h2 className="font-semibold mb-3">Record a New Case</h2>
+      {err && <div className="mb-3 text-sm text-red-700 bg-red-50 border border-red-200 rounded p-2">{err}</div>}
+      <div className="grid grid-cols-2 gap-4 mb-3">
+        <div>
+          <label className="block text-sm font-medium mb-1">Title</label>
+          <input required className="w-full border rounded px-3 py-2" value={form.title} onChange={set("title")} />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Offence Type</label>
+          <select className="w-full border rounded px-3 py-2" value={form.offence_type} onChange={set("offence_type")}>
+            {["Armed Robbery","Housebreaking","Motorcycle Theft","Larceny","Fraud","Assault","Drug Possession"].map(o=>
+              <option key={o} value={o}>{o}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Priority</label>
+          <select className="w-full border rounded px-3 py-2" value={form.priority} onChange={set("priority")}>
+            <option value={1}>Low</option><option value={2}>Medium</option><option value={3}>High</option>
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Station</label>
+          <select className="w-full border rounded px-3 py-2" value={form.station_id} onChange={set("station_id")}>
+            {stations.map(s => <option key={s.id} value={s.id}>{s.name}</option>)}
+          </select>
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Location</label>
+          <input className="w-full border rounded px-3 py-2" value={form.location} onChange={set("location")} />
+        </div>
+        <div>
+          <label className="block text-sm font-medium mb-1">Reported Date</label>
+          <input type="date" className="w-full border rounded px-3 py-2" value={form.reported_date} onChange={set("reported_date")} />
+        </div>
+      </div>
+      <label className="block text-sm font-medium mb-1">Case Narrative</label>
+      <textarea required rows="4" className="w-full border rounded px-3 py-2 mb-4"
+        placeholder="Describe what happened, who was involved, and any exhibits..."
+        value={form.narrative} onChange={set("narrative")} />
+      <div className="flex gap-2">
+        <button disabled={busy} className="bg-slate-900 text-white rounded px-4 py-2 font-semibold disabled:opacity-50">
+          {busy ? "Saving and analysing..." : "Save Case"}
+        </button>
+        <button type="button" onClick={onCancel} className="border rounded px-4 py-2">Cancel</button>
+      </div>
+    </form>
+  );
+}
+
+function CaseList({ token, user, setPage, setActiveCaseId }) {
+  const [cases, setCases] = useState([]);
+  const [stations, setStations] = useState([]);
+  const [showForm, setShowForm] = useState(false);
+  const [q, setQ] = useState("");
+  const canCreate = ["Case Records Clerk","Investigating Officer","Police Commander","System Administrator"].includes(user.role);
+
+  const load = useCallback(() => {
+    api("/api/cases" + (q ? "?q=" + encodeURIComponent(q) : ""), token).then(setCases);
+  }, [q, token]);
+  useEffect(() => { load(); api("/api/stations", token).then(setStations); }, [load]);
+
+  return (
+    <div>
+      <div className="flex items-center justify-between mb-4">
+        <h1 className="text-2xl font-bold">Cases</h1>
+        {canCreate && !showForm && (
+          <button onClick={() => setShowForm(true)} className="bg-slate-900 text-white rounded px-4 py-2 font-semibold">+ New Case</button>
+        )}
+      </div>
+      {showForm && <NewCaseForm token={token} stations={stations}
+        onCreated={(id) => { setShowForm(false); load(); setActiveCaseId(id); setPage("case_detail"); }}
+        onCancel={() => setShowForm(false)} />}
+      <input className="border rounded px-3 py-2 mb-3 w-80" placeholder="Search by title, case number or narrative..."
+        value={q} onChange={e => setQ(e.target.value)} />
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <table className="w-full text-sm">
+          <thead><tr className="text-left text-slate-500 border-b bg-slate-50">
+            <th className="py-2 px-3">Case No.</th><th>Title</th><th>Offence</th><th>Priority</th><th>Status</th><th>Reported</th>
+          </tr></thead>
+          <tbody>
+            {cases.map(c => (
+              <tr key={c.id} className="border-b last:border-0 hover:bg-slate-50 cursor-pointer"
+                onClick={() => { setActiveCaseId(c.id); setPage("case_detail"); }}>
+                <td className="py-2 px-3 font-mono text-xs">{c.case_number}</td>
+                <td>{c.title}</td><td>{c.offence_type}</td>
+                <td><Badge text={PRIORITY_LABEL[c.priority]} cls={PRIORITY_COLOR[c.priority]} /></td>
+                <td><Badge text={c.status} cls={STATUS_COLOR[c.status]} /></td>
+                <td>{c.reported_date}</td>
+              </tr>
+            ))}
+            {cases.length === 0 && <tr><td className="p-4 text-slate-400" colSpan="6">No cases found.</td></tr>}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+function CaseDetail({ token, caseId, setPage }) {
+  const [data, setData] = useState(null);
+  const [err, setErr] = useState("");
+  useEffect(() => { api("/api/cases/" + caseId, token).then(setData).catch(e => setErr(e.message)); }, [caseId]);
+  if (err) return <div className="text-red-700">{err}</div>;
+  if (!data) return <div>Loading...</div>;
+  const { case: c, entities, recommendations, timeline, similar_cases } = data;
+
+  const grouped = {};
+  entities.forEach(e => { (grouped[e.entity_type] = grouped[e.entity_type] || []).push(e); });
+
+  return (
+    <div>
+      <button onClick={() => setPage("cases")} className="text-sm text-slate-500 mb-3">&larr; Back to Cases</button>
+      <div className="flex items-center gap-3 mb-1">
+        <h1 className="text-2xl font-bold">{c.title}</h1>
+        <Badge text={c.status} cls={STATUS_COLOR[c.status]} />
+        <Badge text={PRIORITY_LABEL[c.priority] + " priority"} cls={PRIORITY_COLOR[c.priority]} />
+      </div>
+      <div className="text-sm text-slate-500 mb-4">{c.case_number} &middot; {c.offence_type} &middot; {c.location} &middot; {c.reported_date}</div>
+
+      <div className="grid grid-cols-3 gap-4">
+        <div className="col-span-2 space-y-4">
+          <div className="bg-white rounded-xl shadow p-4">
+            <h2 className="font-semibold mb-2">Narrative</h2>
+            <p className="text-sm whitespace-pre-wrap">{c.narrative}</p>
+            {c.outcome_note && <p className="text-sm text-green-700 mt-2"><b>Outcome:</b> {c.outcome_note}</p>}
+          </div>
+
+          <div className="bg-white rounded-xl shadow p-4">
+            <h2 className="font-semibold mb-2">AI Recommendations for This Case</h2>
+            {recommendations.length === 0 && <p className="text-sm text-slate-400">None yet.</p>}
+            {recommendations.map(r => (
+              <div key={r.id} className="border rounded p-3 mb-2">
+                <div className="flex justify-between text-xs text-slate-500 mb-1">
+                  <span>{r.agent} &middot; {r.kind}{r.score != null ? " · score " + Math.round(r.score*100)/100 : ""}</span>
+                  <Badge text={r.status} cls={r.status === "pending" ? "bg-amber-100 text-amber-800" : r.status === "accepted" ? "bg-green-100 text-green-800" : "bg-slate-200 text-slate-700"} />
+                </div>
+                <p className="text-sm">{r.explanation}</p>
+              </div>
+            ))}
+          </div>
+
+          {timeline.length > 1 && (
+            <div className="bg-white rounded-xl shadow p-4">
+              <h2 className="font-semibold mb-2">Timeline of Linked Cases</h2>
+              <ol className="border-l-2 border-slate-200 pl-4 space-y-2">
+                {timeline.map(t => (
+                  <li key={t.id}>
+                    <div className="text-xs text-slate-400">{t.reported_date}</div>
+                    <div className="text-sm font-medium">{t.case_number} &mdash; {t.title} <Badge text={t.status} cls={STATUS_COLOR[t.status]} /></div>
+                  </li>
+                ))}
+              </ol>
+            </div>
+          )}
+        </div>
+
+        <div className="space-y-4">
+          <div className="bg-white rounded-xl shadow p-4">
+            <h2 className="font-semibold mb-2">Extracted Entities</h2>
+            {Object.keys(grouped).length === 0 && <p className="text-sm text-slate-400">None extracted.</p>}
+            {Object.entries(grouped).map(([type, list]) => (
+              <div key={type} className="mb-2">
+                <div className="text-xs uppercase text-slate-400">{type}</div>
+                <div className="flex flex-wrap gap-1 mt-1">
+                  {list.map((e,i) => <Badge key={i} text={e.value + (e.role ? " (" + e.role + ")" : "")}
+                    cls={e.role === "suspect" ? "bg-red-100 text-red-800" : "bg-slate-100 text-slate-700"} />)}
+                </div>
+              </div>
+            ))}
+          </div>
+          <div className="bg-white rounded-xl shadow p-4">
+            <h2 className="font-semibold mb-2">Similar Cases</h2>
+            {similar_cases.length === 0 && <p className="text-sm text-slate-400">None found.</p>}
+            {similar_cases.map(s => (
+              <div key={s.id} className="text-sm border-b last:border-0 py-1">
+                {s.case_number} &middot; {s.title} <span className="text-slate-400 text-xs">({s.similarity})</span>
+              </div>
+            ))}
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ Recommendations
+function Recommendations({ token, user }) {
+  const [status, setStatus] = useState("pending");
+  const [list, setList] = useState([]);
+  const canDecide = user.role === "Police Commander" || user.role === "System Administrator";
+
+  const load = useCallback(() => { api("/api/recommendations?status=" + status, token).then(setList); }, [status, token]);
+  useEffect(load, [load]);
+
+  const decide = async (id, decision) => {
+    await api(`/api/recommendations/${id}/decide`, token, { method: "POST", body: JSON.stringify({ decision }) });
+    load();
+  };
+
+  return (
+    <div>
+      <h1 className="text-2xl font-bold mb-4">AI Recommendations</h1>
+      <div className="mb-3">
+        {["pending","accepted","rejected"].map(s => (
+          <button key={s} onClick={() => setStatus(s)}
+            className={"mr-2 px-3 py-1 rounded-full text-sm " + (status === s ? "bg-slate-900 text-white" : "bg-white border")}>
+            {s[0].toUpperCase()+s.slice(1)}
+          </button>
+        ))}
+      </div>
+      <div className="space-y-3">
+        {list.map(r => (
+          <div key={r.id} className="bg-white rounded-xl shadow p-4">
+            <div className="flex justify-between text-xs text-slate-500 mb-1">
+              <span>{r.agent} &middot; {r.kind}{r.score != null ? " · score " + Math.round(r.score*100)/100 : ""} &middot; {r.created_at}</span>
+              <Badge text={r.status} cls={r.status === "pending" ? "bg-amber-100 text-amber-800" : r.status === "accepted" ? "bg-green-100 text-green-800" : "bg-slate-200 text-slate-700"} />
+            </div>
+            <p className="text-sm mb-2">{r.explanation}</p>
+            {canDecide && r.status === "pending" && (
+              <div className="flex gap-2">
+                <button onClick={() => decide(r.id, "accepted")} className="bg-green-600 text-white text-sm rounded px-3 py-1">Accept</button>
+                <button onClick={() => decide(r.id, "rejected")} className="bg-red-600 text-white text-sm rounded px-3 py-1">Reject</button>
+              </div>
+            )}
+          </div>
+        ))}
+        {list.length === 0 && <p className="text-slate-400">No {status} recommendations.</p>}
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ Resource Optimisation
+function Optimise({ token }) {
+  const [pool, setPool] = useState(10);
+  const [result, setResult] = useState(null);
+  const [busy, setBusy] = useState(false);
+  const run = async () => {
+    setBusy(true);
+    const res = await api("/api/optimise?pool_size=" + pool, token, { method: "POST" });
+    setResult(res); setBusy(false);
+  };
+  return (
+    <div>
+      <h1 className="text-2xl font-bold mb-4">Resource Optimisation</h1>
+      <div className="bg-white rounded-xl shadow p-4 mb-4 flex items-end gap-3">
+        <div>
+          <label className="block text-sm font-medium mb-1">Extra patrol officers available (surge pool)</label>
+          <input type="number" min="0" className="border rounded px-3 py-2 w-40" value={pool} onChange={e => setPool(e.target.value)} />
+        </div>
+        <button disabled={busy} onClick={run} className="bg-slate-900 text-white rounded px-4 py-2 font-semibold disabled:opacity-50">
+          {busy ? "Solving..." : "Run Optimisation"}
+        </button>
+      </div>
+      {result && (
+        <div className="bg-white rounded-xl shadow p-4">
+          <p className="text-sm text-slate-500 mb-3">Solver: {result.solver} &middot; Target risk-per-officer ratio: {result.target_ratio}</p>
+          <table className="w-full text-sm">
+            <thead><tr className="text-left text-slate-500 border-b">
+              <th className="py-1">Station</th><th>Current Officers</th><th>Risk Score</th>
+              <th>Current Ratio</th><th>Recommended Extra</th><th>Projected Ratio</th>
+            </tr></thead>
+            <tbody>
+              {result.allocations.map(a => (
+                <tr key={a.station_id} className="border-b last:border-0">
+                  <td className="py-1">{a.station}</td><td>{a.current_officers}</td><td>{a.risk_score}</td>
+                  <td>{a.current_ratio}</td>
+                  <td className={a.recommended_extra_officers > 0 ? "font-semibold text-green-700" : ""}>{a.recommended_extra_officers}</td>
+                  <td>{a.projected_ratio}</td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
+          <p className="text-xs text-slate-400 mt-3">This recommendation was saved to the Recommendations list and logged to the audit trail. It is advisory only &mdash; the Police Commander decides whether to act on it.</p>
+        </div>
+      )}
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ Audit
+function Audit({ token }) {
+  const [rows, setRows] = useState([]);
+  useEffect(() => { api("/api/audit", token).then(setRows); }, []);
+  return (
+    <div>
+      <h1 className="text-2xl font-bold mb-4">Audit Trail</h1>
+      <div className="bg-white rounded-xl shadow overflow-hidden">
+        <table className="w-full text-sm">
+          <thead><tr className="text-left text-slate-500 border-b bg-slate-50">
+            <th className="py-2 px-3">Time</th><th>User</th><th>Event</th><th>Case</th><th>Detail</th>
+          </tr></thead>
+          <tbody>
+            {rows.map(r => (
+              <tr key={r.id} className="border-b last:border-0">
+                <td className="py-1 px-3 text-xs font-mono">{r.created_at}</td>
+                <td>{r.username || "system"}</td><td>{r.event}</td><td>{r.case_id || ""}</td>
+                <td className="text-slate-500">{r.detail || ""}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    </div>
+  );
+}
+
+// ------------------------------------------------------------------ App
+function App() {
+  const [token, setToken] = useState(localStorage.getItem("token") || "");
+  const [user, setUser] = useState(JSON.parse(localStorage.getItem("user") || "null"));
+  const [page, setPage] = useState("dashboard");
+  const [activeCaseId, setActiveCaseId] = useState(null);
+
+  const onLogin = (t, u) => {
+    localStorage.setItem("token", t); localStorage.setItem("user", JSON.stringify(u));
+    setToken(t); setUser(u);
+  };
+  const onLogout = () => { localStorage.removeItem("token"); localStorage.removeItem("user"); setToken(""); setUser(null); };
+
+  if (!token || !user) return <Login onLogin={onLogin} />;
+
+  let body;
+  if (page === "dashboard") body = <Dashboard token={token} />;
+  else if (page === "cases") body = <CaseList token={token} user={user} setPage={setPage} setActiveCaseId={setActiveCaseId} />;
+  else if (page === "case_detail") body = <CaseDetail token={token} caseId={activeCaseId} setPage={setPage} />;
+  else if (page === "recommendations") body = <Recommendations token={token} user={user} />;
+  else if (page === "optimise") body = <Optimise token={token} />;
+  else if (page === "audit") body = <Audit token={token} />;
+
+  return <Layout user={user} page={page} setPage={setPage} onLogout={onLogout}>{body}</Layout>;
+}
+
+ReactDOM.createRoot(document.getElementById("root")).render(<App />);
+</script>
+</body>
+</html>
