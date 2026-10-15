@@ -4,7 +4,14 @@ import sqlite3
 from contextlib import contextmanager
 
 from . import config
+import numpy as np
+from psycopg2.extensions import register_adapter, AsIs
 
+register_adapter(np.float64, lambda v: AsIs(repr(float(v))))
+register_adapter(np.float32, lambda v: AsIs(repr(float(v))))
+register_adapter(np.int64, lambda v: AsIs(int(v)))
+register_adapter(np.int32, lambda v: AsIs(int(v)))
+register_adapter(np.bool_, lambda v: AsIs(bool(v)))
 
 class DB:
     def __init__(self, conn, engine):
@@ -60,9 +67,16 @@ def _open():
     import psycopg2
     import psycopg2.extras
     s = config.pg_settings()
-    conn = psycopg2.connect(host=s["host"], port=s["port"], user=s["user"],
-                            password=s["password"], dbname=s["dbname"],
-                            cursor_factory=psycopg2.extras.RealDictCursor)
+    conn = psycopg2.connect(
+    host=s["host"], port=s["port"], user=s["user"],
+    password=s["password"], dbname=s["dbname"],
+    cursor_factory=psycopg2.extras.RealDictCursor,
+    connect_timeout=30,
+    keepalives=1,
+    keepalives_idle=30,
+    keepalives_interval=10,
+    keepalives_count=5,
+)
     return conn, eng
 
 
